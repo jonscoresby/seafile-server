@@ -251,61 +251,55 @@ mysql_db_start (SeafileSession *session)
 
 #endif
 
-#ifdef HAVE_POSTGRESQL
+#ifdef HAVE_PGSQL
 
 static int
 pgsql_db_start (SeafileSession *session)
 {
-    char *host, *user, *passwd, *db, *unix_socket;
-    unsigned int port;
-    GError *error = NULL;
+    DBOption *option = NULL;
 
-    host = seaf_key_file_get_string (session->config, "database", "host", &error);
-    if (!host) {
-        seaf_warning ("DB host not set in config.\n");
+    option = load_db_option (session);
+    if (!option) {
+        seaf_warning ("Failed to load database config.\n");
         return -1;
     }
 
-    user = seaf_key_file_get_string (session->config, "database", "user", &error);
-    if (!user) {
-        seaf_warning ("DB user not set in config.\n");
-        return -1;
-    }
-
-    passwd = seaf_key_file_get_string (session->config, "database", "password", &error);
-    if (!passwd) {
-        seaf_warning ("DB passwd not set in config.\n");
-        return -1;
-    }
-
-    db = seaf_key_file_get_string (session->config, "database", "db_name", &error);
-    if (!db) {
-        seaf_warning ("DB name not set in config.\n");
-        return -1;
-    }
-    port = g_key_file_get_integer (session->config,
-                                   "database", "port", &error);
-    if (error) {
-        port = 0;
-        g_clear_error (&error);
-    }
-
-    unix_socket = seaf_key_file_get_string (session->config,
-                                         "database", "unix_socket", &error);
-
-    session->db = seaf_db_new_pgsql (host, port, user, passwd, db, unix_socket,
-                                     DEFAULT_MAX_CONNECTIONS);
+    session->db = seaf_db_new_pgsql (option->host, option->port, option->user,
+                                     option->passwd, option->seafile_db_name,
+                                     option->use_ssl, option->ca_path,
+                                     option->max_connections);
     if (!session->db) {
+        db_option_free (option);
         seaf_warning ("Failed to start pgsql db.\n");
         return -1;
     }
 
-    g_free (host);
-    g_free (user);
-    g_free (passwd);
-    g_free (db);
-    g_free (unix_socket);
+    db_option_free (option);
+    return 0;
+}
 
+static int
+ccnet_init_pgsql_database (SeafileSession *session)
+{
+    DBOption *option = NULL;
+
+    option = load_db_option (session);
+    if (!option) {
+        seaf_warning ("Failed to load database config.\n");
+        return -1;
+    }
+
+    session->ccnet_db = seaf_db_new_pgsql (option->host, option->port, option->user,
+                                           option->passwd, option->ccnet_db_name,
+                                           option->use_ssl, option->ca_path,
+                                           option->max_connections);
+    if (!session->ccnet_db) {
+        db_option_free (option);
+        seaf_warning ("Failed to open ccnet database.\n");
+        return -1;
+    }
+
+    db_option_free (option);
     return 0;
 }
 
@@ -324,6 +318,14 @@ load_database_config (SeafileSession *session)
     if (type && strcasecmp (type, "sqlite") == 0) {
         ret = sqlite_db_start (session);
     }
+#ifdef HAVE_PGSQL
+    else if (type && (strcasecmp (type, "pgsql") == 0 ||
+                      strcasecmp (type, "postgresql") == 0 ||
+                      strcasecmp (type, "postgres") == 0)) {
+        seaf_message ("Use database PostgreSQL\n");
+        ret = pgsql_db_start (session);
+    }
+#endif
 #ifdef HAVE_MYSQL
     else {
         ret = mysql_db_start (session);
@@ -394,6 +396,14 @@ load_ccnet_database_config (SeafileSession *session)
         seaf_message ("Use database sqlite\n");
         ret = ccnet_init_sqlite_database (session);
     }
+#ifdef HAVE_PGSQL
+    else if (engine && (strcasecmp (engine, "pgsql") == 0 ||
+                        strcasecmp (engine, "postgresql") == 0 ||
+                        strcasecmp (engine, "postgres") == 0)) {
+        seaf_message ("Use database PostgreSQL\n");
+        ret = ccnet_init_pgsql_database (session);
+    }
+#endif
 #ifdef HAVE_MYSQL
     else {
         seaf_message("Use database Mysql\n");

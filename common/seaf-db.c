@@ -547,23 +547,250 @@ pgsql_db_release_connection (DBConnection *vconn)
     g_free (conn);
 }
 
-/* Rewrite '?' placeholders into $1, $2, ... — libpq's native form.
- * Quoted strings ('...') and quoted identifiers ("...") are skipped so
- * we don't accidentally rewrite literal '?' chars inside them. */
+/* glibc has strcasestr but it's a GNU extension. Provide a tiny portable one. */
+static const char *
+strcasestr_compat (const char *hay, const char *needle)
+{
+    size_t nlen = strlen (needle);
+    if (nlen == 0) return hay;
+    for (; *hay; ++hay) {
+        if (g_ascii_strncasecmp (hay, needle, nlen) == 0)
+            return hay;
+    }
+    return NULL;
+}
+
+/* SQL translation from mysql-flavor (used in the C source) to postgres.
+ *
+ * Three rewrites, applied in this order, each skipping quoted regions:
+ *   1. REPLACE INTO <T> (cols) VALUES (...)  ->  INSERT INTO <T> (cols)
+ *      VALUES (...) ON CONFLICT ON CONSTRAINT <C> DO UPDATE SET col = EXCLUDED.col, ...
+ *      (only known tables; map is below.)
+ *   2. Bare `user` identifier -> "user" (reserved word in postgres).
+ *   3. '?' placeholders -> $1, $2, ...
+ *
+ * #1 and #2 use a tiny manual tokenizer that respects 'string' and "ident"
+ * quoting so we don't rewrite text inside literals.
+ */
+
+/* MySQL REPLACE INTO call sites grep'd from the source tree. The constraint
+ * names match what scripts/sql/pgsql/*.sql declares. Add a row here when a new
+ * REPLACE INTO is introduced. */
+static const struct {
+    const char *table;       /* lowercased for comparison */
+    const char *constraint;  /* unique-constraint name from pgsql schema */
+} pgsql_upsert_map[] = {
+    {"userquota",         "userquota_user_uniq"},
+    {"orgquota",          "orgquota_org_id_uniq"},
+    {"orguserquota",      "orguserquota_org_user_uniq"},
+    {"repohistorylimit",  "repohistorylimit_repo_id_uniq"},
+    {"repovalidsince",    "repovalidsince_repo_id_uniq"},
+    {"garbagerepos",      "garbagerepos_repo_id_uniq"},
+    {"repohead",          "repohead_repo_id_uniq"},
+    {"repoowner",         "repoowner_repo_id_uniq"},
+    {"innerpubrepo",      "innerpubrepo_repo_id_uniq"},
+    {"branch",            "branch_repo_name_uniq"},
+};
+
+static const char *
+_lookup_pg_constraint (const char *table)
+{
+    for (size_t i = 0; i < G_N_ELEMENTS (pgsql_upsert_map); ++i) {
+        if (g_ascii_strcasecmp (pgsql_upsert_map[i].table, table) == 0)
+            return pgsql_upsert_map[i].constraint;
+    }
+    return NULL;
+}
+
+/* Match "REPLACE INTO <table> (col1, col2, ...) VALUES (...)" at *pp.
+ * On success: returns TRUE, *pp advanced past the VALUES (...) clause, and
+ * appends the rewritten INSERT ... ON CONFLICT ... clause to `out`. */
+static gboolean
+_try_translate_replace_into (const char **pp, GString *out)
+{
+    const char *p = *pp;
+
+    if (g_ascii_strncasecmp (p, "REPLACE", 7) != 0) return FALSE;
+    const char *q = p + 7;
+    while (*q == ' ' || *q == '\t' || *q == '\n') ++q;
+    if (g_ascii_strncasecmp (q, "INTO", 4) != 0) return FALSE;
+    q += 4;
+    while (*q == ' ' || *q == '\t' || *q == '\n') ++q;
+
+    /* table name */
+    const char *table_start = q;
+    while (g_ascii_isalnum (*q) || *q == '_') ++q;
+    if (q == table_start) return FALSE;
+    char *table = g_strndup (table_start, q - table_start);
+
+    const char *constraint = _lookup_pg_constraint (table);
+    if (!constraint) {
+        /* Unknown table -> don't translate. Let it error loudly at exec time
+         * so we notice and add the table to the map. */
+        seaf_warning ("REPLACE INTO unmapped table '%s'; postgres backend "
+                      "cannot translate this statement.\n", table);
+        g_free (table);
+        return FALSE;
+    }
+
+    while (*q == ' ' || *q == '\t' || *q == '\n') ++q;
+    if (*q != '(') { g_free (table); return FALSE; }
+
+    /* column list: scan to matching ')', collect comma-separated names */
+    const char *cols_start = q + 1;
+    const char *cols_end = strchr (cols_start, ')');
+    if (!cols_end) { g_free (table); return FALSE; }
+    char *cols_raw = g_strndup (cols_start, cols_end - cols_start);
+    gchar **cols = g_strsplit (cols_raw, ",", -1);
+    for (gchar **c = cols; *c; ++c) *c = g_strstrip (*c);
+
+    /* skip past VALUES (...) — copy verbatim to output */
+    const char *after_cols = cols_end + 1;
+    while (*after_cols == ' ' || *after_cols == '\t' || *after_cols == '\n') ++after_cols;
+    if (g_ascii_strncasecmp (after_cols, "VALUES", 6) != 0) {
+        g_free (table); g_free (cols_raw); g_strfreev (cols); return FALSE;
+    }
+    const char *vals_open = strchr (after_cols + 6, '(');
+    if (!vals_open) { g_free (table); g_free (cols_raw); g_strfreev (cols); return FALSE; }
+    /* find matching close paren (track depth in case of nested parens) */
+    int depth = 1;
+    const char *vals_end = vals_open + 1;
+    char vq = 0;
+    while (*vals_end && depth > 0) {
+        char c = *vals_end;
+        if (vq) {
+            if (c == vq) vq = 0;
+        } else if (c == '\'' || c == '"') {
+            vq = c;
+        } else if (c == '(') {
+            ++depth;
+        } else if (c == ')') {
+            --depth;
+        }
+        if (depth > 0) ++vals_end;
+    }
+    if (depth != 0) { g_free (table); g_free (cols_raw); g_strfreev (cols); return FALSE; }
+
+    /* Emit: INSERT INTO <table> (cols) VALUES (vals) ON CONFLICT ON CONSTRAINT
+     * <name> DO UPDATE SET <col>=EXCLUDED.<col>, ... — for every col. */
+    g_string_append (out, "INSERT INTO ");
+    g_string_append (out, table);
+    g_string_append (out, " (");
+    g_string_append (out, cols_raw);
+    g_string_append (out, ") ");
+    /* copy verbatim from "VALUES (" through the matched ')' */
+    g_string_append_len (out, after_cols, vals_end - after_cols + 1);
+    g_string_append (out, " ON CONFLICT ON CONSTRAINT ");
+    g_string_append (out, constraint);
+    g_string_append (out, " DO UPDATE SET ");
+    gboolean first = TRUE;
+    for (gchar **c = cols; *c; ++c) {
+        if (!**c) continue;
+        if (!first) g_string_append (out, ", ");
+        first = FALSE;
+        g_string_append_printf (out, "%s = EXCLUDED.%s", *c, *c);
+    }
+
+    *pp = vals_end + 1;
+    g_free (table);
+    g_free (cols_raw);
+    g_strfreev (cols);
+    return TRUE;
+}
+
+static char *
+_translate_replace_into (const char *sql)
+{
+    /* Most queries don't contain REPLACE INTO; fast-path skip. */
+    if (!g_ascii_strncasecmp (sql, "REPLACE", 7))
+        /* fall through */;
+    else if (!strcasestr_compat (sql, "REPLACE INTO"))
+        return g_strdup (sql);
+
+    GString *out = g_string_sized_new (strlen (sql) + 64);
+    const char *p = sql;
+    char in_quote = 0;
+    while (*p) {
+        if (in_quote) {
+            g_string_append_c (out, *p);
+            if (*p == in_quote) in_quote = 0;
+            ++p;
+            continue;
+        }
+        if (*p == '\'' || *p == '"') {
+            in_quote = *p;
+            g_string_append_c (out, *p);
+            ++p;
+            continue;
+        }
+        if ((*p == 'R' || *p == 'r') && _try_translate_replace_into (&p, out))
+            continue;
+        g_string_append_c (out, *p);
+        ++p;
+    }
+    return g_string_free (out, FALSE);
+}
+
+/* Rewrite bare `user` identifier -> "user" so it doesn't collide with
+ * postgres's USER() value function. Skip quoted regions and skip when
+ * preceded by '.' (e.g. table.user). */
+static char *
+_quote_reserved_words (const char *sql)
+{
+    GString *out = g_string_sized_new (strlen (sql) + 16);
+    const char *p = sql;
+    char in_quote = 0;
+    char prev = ' ';
+    while (*p) {
+        if (in_quote) {
+            g_string_append_c (out, *p);
+            if (*p == in_quote) in_quote = 0;
+            prev = *p;
+            ++p;
+            continue;
+        }
+        if (*p == '\'' || *p == '"') {
+            in_quote = *p;
+            g_string_append_c (out, *p);
+            prev = *p;
+            ++p;
+            continue;
+        }
+        /* word boundary check: prev is non-identifier and following 4 chars are 'user'
+         * and the char after is non-identifier. */
+        if ((g_ascii_tolower(*p) == 'u') &&
+            !g_ascii_isalnum (prev) && prev != '_' && prev != '.' &&
+            (g_ascii_tolower(p[1]) == 's') &&
+            (g_ascii_tolower(p[2]) == 'e') &&
+            (g_ascii_tolower(p[3]) == 'r') &&
+            !g_ascii_isalnum (p[4]) && p[4] != '_')
+        {
+            g_string_append (out, "\"user\"");
+            prev = 'r';
+            p += 4;
+            continue;
+        }
+        g_string_append_c (out, *p);
+        prev = *p;
+        ++p;
+    }
+    return g_string_free (out, FALSE);
+}
+
+/* '?' placeholders -> $1, $2, ... */
 static char *
 _translate_placeholders (const char *sql)
 {
     GString *out = g_string_sized_new (strlen (sql) + 16);
     int counter = 0;
     const char *p = sql;
-    char in_quote = 0;  /* 0, '\'', or '"' */
+    char in_quote = 0;
 
     while (*p) {
         char c = *p;
         if (in_quote) {
             g_string_append_c (out, c);
             if (c == in_quote) {
-                /* doubled quote = escape, stay inside */
                 if (*(p+1) == in_quote) {
                     g_string_append_c (out, *(p+1));
                     p += 2;
@@ -591,6 +818,17 @@ _translate_placeholders (const char *sql)
     }
 
     return g_string_free (out, FALSE);
+}
+
+/* Combined pipeline used by PGSQL exec paths. */
+static char *
+_pgsql_translate_sql (const char *sql)
+{
+    char *s1 = _translate_replace_into (sql);
+    char *s2 = _quote_reserved_words (s1);
+    char *s3 = _translate_placeholders (s2);
+    g_free (s1); g_free (s2);
+    return s3;
 }
 
 /* Convert va_list of type-tagged params into the parallel arrays libpq
@@ -668,7 +906,7 @@ pgsql_db_execute_sql (DBConnection *vconn, const char *sql, int n, va_list args,
     PGresult *r = NULL;
     int ret = 0;
 
-    translated = _translate_placeholders (sql);
+    translated = _pgsql_translate_sql (sql);
     if (n > 0) {
         values = _bind_params_pgsql (n, args);
         if (!values) { ret = -1; goto out; }
@@ -705,7 +943,7 @@ pgsql_db_query_foreach_row (DBConnection *vconn, const char *sql,
     PGresult *r = NULL;
     int nrows = 0;
 
-    translated = _translate_placeholders (sql);
+    translated = _pgsql_translate_sql (sql);
     if (n > 0) {
         values = _bind_params_pgsql (n, args);
         if (!values) { nrows = -1; goto out; }
