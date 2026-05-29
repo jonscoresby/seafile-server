@@ -4,6 +4,7 @@
 
 #include "seafile-session.h"
 #include "log.h"
+#include "seaf-utils.h"
 #include "utils.h"
 
 #include "fsck.h"
