@@ -3,7 +3,11 @@
 -- Translation conventions vs the mysql schema:
 --   BIGINT NOT NULL PRIMARY KEY AUTO_INCREMENT   -> BIGSERIAL PRIMARY KEY
 --   BIGINT PRIMARY KEY AUTO_INCREMENT            -> BIGSERIAL PRIMARY KEY
---   BOOL                                         -> BOOLEAN
+--   BOOL                                         -> SMALLINT (kept as integer
+--                                                   because C code passes
+--                                                   int 1/0 and reads via
+--                                                   strtol; postgres BOOLEAN
+--                                                   returns "t"/"f" text)
 --   tinyint                                      -> SMALLINT
 --   ENGINE=INNODB                                -> stripped
 --   `Group`, `GroupUser` (backticked reserved words) -> quoted "Group", "GroupUser"
@@ -16,7 +20,7 @@
 CREATE TABLE IF NOT EXISTS Binding (
   id BIGSERIAL PRIMARY KEY,
   email VARCHAR(255),
-  peer_id CHAR(41),
+  peer_id VARCHAR(41),
   CONSTRAINT binding_peer_id_uniq UNIQUE (peer_id)
 );
 CREATE INDEX IF NOT EXISTS binding_email_idx ON Binding (email);
@@ -25,9 +29,9 @@ CREATE TABLE IF NOT EXISTS EmailUser (
   id BIGSERIAL PRIMARY KEY,
   email VARCHAR(255),
   passwd VARCHAR(256),
-  is_staff BOOLEAN NOT NULL,
-  is_active BOOLEAN NOT NULL,
-  is_department_owner BOOLEAN NOT NULL DEFAULT FALSE,
+  is_staff SMALLINT NOT NULL,
+  is_active SMALLINT NOT NULL,
+  is_department_owner SMALLINT NOT NULL DEFAULT 0,
   ctime BIGINT,
   reference_id VARCHAR(255),
   CONSTRAINT emailuser_email_uniq UNIQUE (email),
@@ -79,8 +83,8 @@ CREATE TABLE IF NOT EXISTS LDAPUsers (
   id BIGSERIAL PRIMARY KEY,
   email VARCHAR(255) NOT NULL,
   password VARCHAR(255) NOT NULL,
-  is_staff BOOLEAN NOT NULL,
-  is_active BOOLEAN NOT NULL,
+  is_staff SMALLINT NOT NULL,
+  is_active SMALLINT NOT NULL,
   extra_attrs TEXT,
   reference_id VARCHAR(255),
   CONSTRAINT ldapusers_email_uniq UNIQUE (email),
@@ -99,7 +103,7 @@ CREATE TABLE IF NOT EXISTS OrgUser (
   id BIGSERIAL PRIMARY KEY,
   org_id INTEGER,
   email VARCHAR(255),
-  is_staff BOOLEAN NOT NULL,
+  is_staff SMALLINT NOT NULL,
   CONSTRAINT orguser_org_email_uniq UNIQUE (org_id, email)
 );
 CREATE INDEX IF NOT EXISTS orguser_email_idx ON OrgUser (email);
