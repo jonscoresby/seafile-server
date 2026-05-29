@@ -1439,18 +1439,26 @@ create_tables_sqlite (SeafRepoManager *mgr)
 static int
 create_db_tables_if_not_exist (SeafRepoManager *mgr)
 {
-    if (!mgr->seaf->create_tables && seaf_db_type (mgr->seaf->db) != SEAF_DB_TYPE_PGSQL)
-        return 0;
-
     SeafDB *db = mgr->seaf->db;
     int db_type = seaf_db_type (db);
+
+    /* PostgreSQL: schemas are loaded externally from
+     * scripts/sql/pgsql/*.sql (see NixOS module or setup-seafile-pgsql.py).
+     * The inline create_tables_pgsql() the original C source had was never
+     * finished — `create_tables_mysql`'s queries don't translate cleanly to
+     * postgres (BIGINT NOT NULL PRIMARY KEY AUTO_INCREMENT etc). So we
+     * trust the external schema load and skip table creation here.
+     */
+    if (db_type == SEAF_DB_TYPE_PGSQL)
+        return 0;
+
+    if (!mgr->seaf->create_tables)
+        return 0;
 
     if (db_type == SEAF_DB_TYPE_MYSQL)
         return create_tables_mysql (mgr);
     else if (db_type == SEAF_DB_TYPE_SQLITE)
         return create_tables_sqlite (mgr);
-    /* else if (db_type == SEAF_DB_TYPE_PGSQL) */
-    /*     return create_tables_pgsql (mgr); */
 
     g_return_val_if_reached (-1);
 }
