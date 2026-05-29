@@ -96,9 +96,3 @@ tests/conf/PeerMgr
 /symbols
 __pycache__/
 .cache/
-/file*.txt
-/part*.txt
-/first.txt
-/second.txt
-/third.txt
-/test.txt
