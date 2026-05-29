@@ -12,7 +12,7 @@ AM_CFLAGS = -DPKGDATADIR=\"$(pkgdatadir)\" \
 	@GLIB2_CFLAGS@ \
 	@MSVC_CFLAGS@ \
 	@LIBARCHIVE_CFLAGS@ \
-	@MYSQL_CFLAGS@ \
+	@MYSQL_CFLAGS@ @PGSQL_CFLAGS@ \
 	@LIBHIREDIS_CFLAGS@ \
 	-Wall
 
@@ -93,5 +93,5 @@ seaf_server_LDADD = $(top_builddir)/lib/libseafile_common.la \
 	$(top_builddir)/common/cdc/libcdc.la \
 	@SEARPC_LIBS@ @JANSSON_LIBS@ ${LIB_WS32} @ZLIB_LIBS@ \
 	@LIBARCHIVE_LIBS@ @LIB_ICONV@ \
-	@LDAP_LIBS@ @MYSQL_LIBS@ -lsqlite3 \
+	@LDAP_LIBS@ @MYSQL_LIBS@ @PGSQL_LIBS@ -lsqlite3 \
 	@CURL_LIBS@ @JWT_LIBS@ @LIBHIREDIS_LIBS@ @ARGON2_LIBS@

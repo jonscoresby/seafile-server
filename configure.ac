@@ -91,6 +91,11 @@ AC_ARG_WITH(mysql,
             [MYSQL_CONFIG=$with_mysql],
 	    [MYSQL_CONFIG="default_mysql_config"])
 
+AC_ARG_WITH(pgsql,
+            AC_HELP_STRING([--with-pgsql],[enable PostgreSQL backend (auto-detected via pkg-config)]),
+            [with_pgsql=$withval],
+            [with_pgsql=auto])
+
 AC_ARG_ENABLE(httpserver, AC_HELP_STRING([--enable-httpserver], [enable httpserver]),
    [compile_httpserver=$enableval],[compile_httpserver="yes"])
 
@@ -244,6 +249,22 @@ else
     AC_SUBST(MYSQL_LIBS)
     AC_DEFINE([HAVE_MYSQL], 1, [Define to 1 if MySQL support is enabled])
 fi
+
+have_pgsql="no"
+if test "x${with_pgsql}" != "xno"; then
+    PKG_CHECK_MODULES(PGSQL, [libpq], [have_pgsql="yes"],
+                      [if test "x${with_pgsql}" = "xyes"; then
+                         AC_MSG_ERROR([*** Unable to find libpq (PostgreSQL client library)])
+                       else
+                         have_pgsql="no"
+                       fi])
+    if test "x${have_pgsql}" = "xyes"; then
+        AC_SUBST(PGSQL_CFLAGS)
+        AC_SUBST(PGSQL_LIBS)
+        AC_DEFINE([HAVE_PGSQL], 1, [Define to 1 if PostgreSQL support is enabled])
+    fi
+fi
+AM_CONDITIONAL([HAVE_PGSQL], [test "x${have_pgsql}" = "xyes"])
 
 if test "${compile_ldap}" = "yes"; then
    if test "$bwin32" != true; then

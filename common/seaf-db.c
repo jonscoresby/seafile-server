@@ -320,6 +320,145 @@ seaf_db_new_sqlite (const char *db_path, int max_connections)
     return db;
 }
 
+#ifdef HAVE_PGSQL
+
+/* PostgreSQL Ops — stub implementations. Phase 1+2 wire up build + dispatch
+ * but the actual libpq calls aren't here yet; selecting pgsql at runtime will
+ * fail loudly until phase 3 lands the real backend. */
+
+static SeafDB *
+pgsql_db_new (const char *host, int port, const char *user, const char *passwd,
+              const char *db_name, gboolean use_ssl, const char *ca_path,
+              int max_connections);
+static DBConnection *
+pgsql_db_get_connection (SeafDB *db);
+static void
+pgsql_db_release_connection (DBConnection *vconn, gboolean need_close);
+static int
+pgsql_db_execute_sql_no_stmt (DBConnection *vconn, const char *sql, gboolean *retry);
+static int
+pgsql_db_execute_sql (DBConnection *vconn, const char *sql, int n, va_list args, gboolean *retry);
+static int
+pgsql_db_query_foreach_row (DBConnection *vconn, const char *sql,
+                            SeafDBRowFunc callback, void *data,
+                            int n, va_list args, gboolean *retry);
+static int
+pgsql_db_row_get_column_count (SeafDBRow *row);
+static const char *
+pgsql_db_row_get_column_string (SeafDBRow *row, int idx);
+static int
+pgsql_db_row_get_column_int (SeafDBRow *row, int idx);
+static gint64
+pgsql_db_row_get_column_int64 (SeafDBRow *row, int idx);
+
+SeafDB *
+seaf_db_new_pgsql (const char *host, int port, const char *user, const char *passwd,
+                   const char *db_name, gboolean use_ssl, const char *ca_path,
+                   int max_connections)
+{
+    SeafDB *db;
+
+    db = pgsql_db_new (host, port, user, passwd, db_name, use_ssl, ca_path,
+                       max_connections);
+    if (!db)
+        return NULL;
+    db->type = SEAF_DB_TYPE_PGSQL;
+
+    db_ops.get_connection = pgsql_db_get_connection;
+    db_ops.release_connection = pgsql_db_release_connection;
+    db_ops.execute_sql_no_stmt = pgsql_db_execute_sql_no_stmt;
+    db_ops.execute_sql = pgsql_db_execute_sql;
+    db_ops.query_foreach_row = pgsql_db_query_foreach_row;
+    db_ops.row_get_column_count = pgsql_db_row_get_column_count;
+    db_ops.row_get_column_string = pgsql_db_row_get_column_string;
+    db_ops.row_get_column_int = pgsql_db_row_get_column_int;
+    db_ops.row_get_column_int64 = pgsql_db_row_get_column_int64;
+
+    return db;
+}
+
+static SeafDB *
+pgsql_db_new (const char *host, int port, const char *user, const char *passwd,
+              const char *db_name, gboolean use_ssl, const char *ca_path,
+              int max_connections)
+{
+    seaf_warning ("pgsql backend not implemented yet (phase 3)\n");
+    return NULL;
+}
+
+static DBConnection *
+pgsql_db_get_connection (SeafDB *db)
+{
+    seaf_warning ("pgsql backend not implemented yet\n");
+    return NULL;
+}
+
+static void
+pgsql_db_release_connection (DBConnection *vconn, gboolean need_close)
+{
+}
+
+static int
+pgsql_db_execute_sql_no_stmt (DBConnection *vconn, const char *sql, gboolean *retry)
+{
+    seaf_warning ("pgsql backend not implemented yet\n");
+    return -1;
+}
+
+static int
+pgsql_db_execute_sql (DBConnection *vconn, const char *sql, int n, va_list args, gboolean *retry)
+{
+    seaf_warning ("pgsql backend not implemented yet\n");
+    return -1;
+}
+
+static int
+pgsql_db_query_foreach_row (DBConnection *vconn, const char *sql,
+                            SeafDBRowFunc callback, void *data,
+                            int n, va_list args, gboolean *retry)
+{
+    seaf_warning ("pgsql backend not implemented yet\n");
+    return -1;
+}
+
+static int
+pgsql_db_row_get_column_count (SeafDBRow *row)
+{
+    return 0;
+}
+
+static const char *
+pgsql_db_row_get_column_string (SeafDBRow *row, int idx)
+{
+    return NULL;
+}
+
+static int
+pgsql_db_row_get_column_int (SeafDBRow *row, int idx)
+{
+    return 0;
+}
+
+static gint64
+pgsql_db_row_get_column_int64 (SeafDBRow *row, int idx)
+{
+    return 0;
+}
+
+#else  /* !HAVE_PGSQL */
+
+SeafDB *
+seaf_db_new_pgsql (const char *host, int port, const char *user, const char *passwd,
+                   const char *db_name, gboolean use_ssl, const char *ca_path,
+                   int max_connections)
+{
+    seaf_warning ("seafile-server was built without PostgreSQL support "
+                  "(reconfigure with --with-pgsql)\n");
+    return NULL;
+}
+
+#endif  /* HAVE_PGSQL */
+
 int
 seaf_db_type (SeafDB *db)
 {
