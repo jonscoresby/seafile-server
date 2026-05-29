@@ -50,6 +50,8 @@ class ServerCtl(object):
     def setup(self):
         if self.db == 'mysql':
             create_mysql_dbs()
+        elif self.db == 'pgsql':
+            create_pgsql_dbs()
 
         os.mkdir (self.central_conf_dir, 0o755)
         os.mkdir (self.seafile_conf_dir, 0o755)
@@ -76,8 +78,25 @@ port=8082
 
         if self.db == 'mysql':
             self.add_seafile_db_conf()
+        elif self.db == 'pgsql':
+            self.add_seafile_pgsql_db_conf()
         else:
             self.add_seafile_sqlite_db_conf()
+
+    def add_seafile_pgsql_db_conf(self):
+        seafile_conf = join(self.central_conf_dir, 'seafile.conf')
+        seafile_db_conf = '''\
+[database]
+type = pgsql
+host = 127.0.0.1
+port = 5432
+user = seafile
+password = seafile
+db_name = seafile
+'''
+        with open(seafile_conf, 'a+') as fp:
+            fp.write('\n')
+            fp.write(seafile_db_conf)
 
     def add_seafile_sqlite_db_conf(self):
         seafile_conf = join(self.central_conf_dir, 'seafile.conf')
@@ -138,6 +157,12 @@ connection_charset = utf8
            seafile_sql_path = join(self.sql_dir, 'mysql', 'seafile.sql')
            sql = f'USE ccnet; source {ccnet_sql_path}; USE seafile; source {seafile_sql_path};'.encode()
            shell('sudo mysql -u root -proot', inputdata=sql, wait=False)
+        elif self.db == 'pgsql':
+           ccnet_sql_path = join(self.sql_dir, 'pgsql', 'ccnet.sql')
+           seafile_sql_path = join(self.sql_dir, 'pgsql', 'seafile.sql')
+           env = dict(os.environ); env['PGPASSWORD'] = 'seafile'
+           shell(f'psql -h 127.0.0.1 -U seafile -d ccnet   -f {ccnet_sql_path}', env=env)
+           shell(f'psql -h 127.0.0.1 -U seafile -d seafile -f {seafile_sql_path}', env=env)
         else:
            config_sql_path = join(self.sql_dir, 'sqlite', 'config.sql')
            groupmgr_sql_path = join(self.sql_dir, 'sqlite', 'groupmgr.sql')
@@ -226,6 +251,8 @@ connection_charset = utf8
             self.fileserver_proc.kill()
         if self.db == 'mysql':
             del_mysql_dbs()
+        elif self.db == 'pgsql':
+            del_pgsql_dbs()
 
     def get_seaserv_envs(self):
         envs = dict(os.environ)
@@ -259,3 +286,21 @@ drop user 'seafile'@'localhost';
     '''
 
     shell('sudo mysql -u root -proot', inputdata=sql)
+
+
+def create_pgsql_dbs():
+    """Provision the test postgres role + ccnet/seafile DBs.
+
+    Assumes a local postgres instance with peer-trusted `postgres` superuser
+    (the normal `sudo -u postgres psql` flow). In CI we set this up via the
+    GitHub Actions postgres service or apt-installed postgresql + initdb.
+    """
+    shell('''sudo -u postgres psql -c "CREATE ROLE seafile LOGIN PASSWORD 'seafile' CREATEDB;"''')
+    shell('''sudo -u postgres psql -c "CREATE DATABASE ccnet   OWNER seafile;"''')
+    shell('''sudo -u postgres psql -c "CREATE DATABASE seafile OWNER seafile;"''')
+
+
+def del_pgsql_dbs():
+    shell('''sudo -u postgres psql -c "DROP DATABASE IF EXISTS ccnet;"''')
+    shell('''sudo -u postgres psql -c "DROP DATABASE IF EXISTS seafile;"''')
+    shell('''sudo -u postgres psql -c "DROP ROLE IF EXISTS seafile;"''')
