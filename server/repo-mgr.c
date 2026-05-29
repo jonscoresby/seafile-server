@@ -624,10 +624,16 @@ del_repo:
                                  1, "string", repo_id);
     }
 
+    /* MySQL's multi-table DELETE syntax isn't valid in postgres. Both backends
+     * accept two separate DELETEs against the same WHERE-equivalent
+     * (RepoTokenPeerInfo.token must match a RepoUserToken.token for this
+     * repo); easiest is to delete the dependent rows first, then the parent. */
     seaf_db_statement_query (mgr->seaf->db,
-                             "DELETE t.*, i.* FROM RepoUserToken t, "
-                             "RepoTokenPeerInfo i WHERE t.token=i.token AND "
-                             "t.repo_id=?",
+                             "DELETE FROM RepoTokenPeerInfo WHERE token IN "
+                             "(SELECT token FROM RepoUserToken WHERE repo_id=?)",
+                             1, "string", repo_id);
+    seaf_db_statement_query (mgr->seaf->db,
+                             "DELETE FROM RepoUserToken WHERE repo_id=?",
                              1, "string", repo_id);
 
     seaf_db_statement_query (mgr->seaf->db,
@@ -1597,10 +1603,15 @@ seaf_repo_manager_delete_token (SeafRepoManager *mgr,
         return -1;
     }
 
+    /* Two-step delete for cross-backend compatibility (see above). */
     if (seaf_db_statement_query (mgr->seaf->db,
-                                 "DELETE t.*, i.* FROM RepoUserToken t, "
-                                 "RepoTokenPeerInfo i WHERE t.token=i.token AND "
-                                 "t.token=?",
+                                 "DELETE FROM RepoTokenPeerInfo WHERE token=?",
+                                 1, "string", token) < 0) {
+        g_set_error (error, SEAFILE_DOMAIN, SEAF_ERR_GENERAL, "DB error");
+        return -1;
+    }
+    if (seaf_db_statement_query (mgr->seaf->db,
+                                 "DELETE FROM RepoUserToken WHERE token=?",
                                  1, "string", token) < 0) {
         g_set_error (error, SEAFILE_DOMAIN, SEAF_ERR_GENERAL, "DB error");
         return -1;

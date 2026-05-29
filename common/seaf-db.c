@@ -820,15 +820,51 @@ _translate_placeholders (const char *sql)
     return g_string_free (out, FALSE);
 }
 
+/* Replace MySQL-style `backtick` identifier quotes with postgres-style "double"
+ * quotes. We do this before _quote_reserved_words so that already-quoted
+ * identifiers like `Group` survive into the final SQL as "Group" (which
+ * postgres needs since Group is reserved). */
+static char *
+_translate_backticks (const char *sql)
+{
+    if (!strchr (sql, '`'))
+        return g_strdup (sql);
+    GString *out = g_string_sized_new (strlen (sql));
+    const char *p = sql;
+    char in_quote = 0;
+    while (*p) {
+        if (in_quote) {
+            g_string_append_c (out, *p);
+            if (*p == in_quote) in_quote = 0;
+            ++p;
+            continue;
+        }
+        if (*p == '\'') {
+            in_quote = *p;
+            g_string_append_c (out, *p);
+            ++p;
+            continue;
+        }
+        if (*p == '`') {
+            g_string_append_c (out, '"');
+        } else {
+            g_string_append_c (out, *p);
+        }
+        ++p;
+    }
+    return g_string_free (out, FALSE);
+}
+
 /* Combined pipeline used by PGSQL exec paths. */
 static char *
 _pgsql_translate_sql (const char *sql)
 {
     char *s1 = _translate_replace_into (sql);
-    char *s2 = _quote_reserved_words (s1);
-    char *s3 = _translate_placeholders (s2);
-    g_free (s1); g_free (s2);
-    return s3;
+    char *s2 = _translate_backticks (s1);
+    char *s3 = _quote_reserved_words (s2);
+    char *s4 = _translate_placeholders (s3);
+    g_free (s1); g_free (s2); g_free (s3);
+    return s4;
 }
 
 /* Convert va_list of type-tagged params into the parallel arrays libpq

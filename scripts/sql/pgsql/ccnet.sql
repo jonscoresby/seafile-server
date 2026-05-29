@@ -10,7 +10,7 @@
 --                                                   returns "t"/"f" text)
 --   tinyint                                      -> SMALLINT
 --   ENGINE=INNODB                                -> stripped
---   `Group`, `GroupUser` (backticked reserved words) -> quoted "Group", "GroupUser"
+--   `Group`, `GroupUser` (backticked reserved words) -> quoted "Group", groupuser
 --   INDEX(...) / KEY(...) inside CREATE TABLE    -> separate CREATE INDEX
 --   UNIQUE INDEX(...) inside CREATE TABLE        -> CONSTRAINT ... UNIQUE
 --   INDEX (email(20))                            -> plain B-tree index on email
@@ -62,14 +62,14 @@ CREATE TABLE IF NOT EXISTS GroupStructure (
   CONSTRAINT groupstructure_group_id_uniq UNIQUE (group_id)
 );
 
-CREATE TABLE IF NOT EXISTS "GroupUser" (
+CREATE TABLE IF NOT EXISTS groupuser (
   id BIGSERIAL PRIMARY KEY,
   group_id BIGINT,
   user_name VARCHAR(255),
   is_staff SMALLINT,
   CONSTRAINT groupuser_group_user_uniq UNIQUE (group_id, user_name)
 );
-CREATE INDEX IF NOT EXISTS groupuser_user_name_idx ON "GroupUser" (user_name);
+CREATE INDEX IF NOT EXISTS groupuser_user_name_idx ON groupuser (user_name);
 
 CREATE TABLE IF NOT EXISTS LDAPConfig (
   id BIGSERIAL PRIMARY KEY,
