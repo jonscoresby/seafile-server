@@ -77,3 +77,23 @@ def group():
     finally:
         if ccnet_api.get_group(group.id):
             ccnet_api.remove_group(group.id)
+
+
+# Per-test cleanup: tests assume a "single fresh group" baseline but many
+# don't actually clean up secondary groups they create directly (not via the
+# `group` fixture). Wipe every group USER/USER2 are in after each test so
+# the next test starts clean. This mirrors what the CI MySQL setup does
+# implicitly by re-provisioning the DB between test runs.
+@pytest.fixture(autouse=True)
+def _wipe_user_groups_after_test():
+    yield
+    for user in (USER, USER2, INACTIVE_USER, ADMIN_USER):
+        try:
+            groups = ccnet_api.get_groups(user) or []
+        except Exception:
+            continue
+        for g in groups:
+            try:
+                ccnet_api.remove_group(g.id)
+            except Exception:
+                pass
