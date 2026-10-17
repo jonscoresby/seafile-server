@@ -51,7 +51,10 @@
 #define HTTP_SCAN_INTERVAL "http_temp_scan_interval"
 
 #define INIT_INFO "If you see this page, Seafile HTTP syncing component works."
-#define PROTO_VERSION "{\"version\": 2}"
+/* `upload_last_modify_map`: upload-api takes a `last_modify_map` form field
+ * (a JSON object from file name to RFC 3339 time), one mtime per file of a
+ * multi-file upload. */
+#define PROTO_VERSION "{\"version\": 2, \"upload_last_modify_map\": true}"
 
 #define CLEANING_INTERVAL_SEC 300	/* 5 minutes */
 #define TOKEN_EXPIRE_TIME 7200	    /* 2 hours */

@@ -430,6 +430,43 @@ rfc3339_to_timestamp (const char *last_modify)
     return mtime;
 }
 
+/* upload-api's `last_modify_map`: a JSON object from file name to RFC 3339
+ * time, one mtime per file of a multi-file upload (`last_modify` is one for
+ * the whole request). Returns filename -> gint64 *, or NULL if absent or
+ * malformed. */
+static GHashTable *
+parse_last_modify_map (const char *json)
+{
+    json_t *object, *value;
+    json_error_t jerror;
+    const char *key;
+    GHashTable *mtimes;
+
+    if (!json)
+        return NULL;
+    object = json_loadb (json, strlen(json), 0, &jerror);
+    if (!object)
+        return NULL;
+    if (!json_is_object (object)) {
+        json_decref (object);
+        return NULL;
+    }
+    mtimes = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, g_free);
+    json_object_foreach (object, key, value) {
+        gint64 mtime = rfc3339_to_timestamp (json_string_value (value));
+        char *name = normalize_utf8_path (key);
+        if (mtime <= 0 || !name) {
+            g_free (name);
+            continue;
+        }
+        gint64 *boxed = g_new (gint64, 1);
+        *boxed = mtime;
+        g_hash_table_replace (mtimes, name, boxed);
+    }
+    json_decref (object);
+    return mtimes;
+}
+
 static void
 upload_api_cb(evhtp_request_t *req, void *arg)
 {
@@ -580,6 +617,8 @@ upload_api_cb(evhtp_request_t *req, void *arg)
 
     filenames_json = file_list_to_json (fsm->filenames);
     tmp_files_json = file_list_to_json (fsm->files);
+    GHashTable *mtimes = parse_last_modify_map (
+        g_hash_table_lookup (fsm->form_kvs, "last_modify_map"));
 
     char *ret_json = NULL;
     char *task_id = NULL;
@@ -591,11 +630,14 @@ upload_api_cb(evhtp_request_t *req, void *arg)
                                              fsm->user,
                                              replace,
                                              mtime,
+                                             mtimes,
                                              &ret_json,
                                              fsm->need_idx_progress ? &task_id : NULL,
                                              &error);
     g_free (filenames_json);
     g_free (tmp_files_json);
+    if (mtimes)
+        g_hash_table_destroy (mtimes);
     if (rc < 0) {
         error_code = ERROR_INTERNAL;
         if (error) {
@@ -1228,6 +1270,7 @@ upload_ajax_cb(evhtp_request_t *req, void *arg)
                                              fsm->user,
                                              0,
                                              mtime,
+                                             NULL,
                                              &ret_json,
                                              fsm->need_idx_progress ? &task_id : NULL,
                                              &error);

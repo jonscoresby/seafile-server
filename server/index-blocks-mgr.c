@@ -181,6 +181,7 @@ start_index_task (gpointer data, gpointer user_data)
                                      id_list,
                                      size_list,
                                      0,
+                                     NULL,
                                      gc_id,
                                      NULL);
     progress->status = ret;

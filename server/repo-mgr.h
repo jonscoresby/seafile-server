@@ -330,6 +330,9 @@ seaf_repo_manager_post_multi_files (SeafRepoManager *mgr,
                                     const char *user,
                                     int replace_existed,
                                     gint64 mtime,
+                                    /* filename -> gint64 *: per-file mtimes
+                                     * overriding mtime (may be NULL). */
+                                    GHashTable *mtimes,
                                     char **new_ids,
                                     char **task_id,
                                     GError **error);
@@ -947,6 +950,7 @@ post_files_and_gen_commit (GList *filenames,
                           GList *id_list,
                           GList *size_list,
                           gint64 mtime,
+                          GHashTable *mtimes,
                           char *last_gc_id,
                           GError **error);
 
