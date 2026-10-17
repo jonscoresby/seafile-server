@@ -54,6 +54,9 @@ func Notify(msg *Message) {
 			return
 		}
 		repoID = event.RepoID
+		if pushes != nil {
+			pushes.notify(repoID)
+		}
 	case "file-lock-changed":
 		var event FileLockEvent
 		err := json.Unmarshal(content, &event)
@@ -130,6 +133,9 @@ func Notify(msg *Message) {
 }
 
 func getGroupMembers(group int) map[string]struct{} {
+	if ccnetDB == nil {
+		return map[string]struct{}{}
+	}
 	query := `SELECT user_name FROM GroupUser WHERE group_id = ?`
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()

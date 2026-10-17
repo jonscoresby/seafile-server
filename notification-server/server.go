@@ -74,11 +74,17 @@ func loadNotifConfig() {
 }
 
 func loadCcnetDB() {
+	// Scoresby fork: the ccnet database (MySQL only upstream) is optional.
+	// Without it, folder permission events scoped to a group reach no
+	// websocket client.
+	if os.Getenv("SEAFILE_MYSQL_DB_USER") == "" {
+		log.Info("No ccnet database configured")
+		return
+	}
 	option, err := loadDBOptionFromEnv()
 	if err != nil {
 		log.Fatalf("Failed to load database from env: %v", err)
 	}
-
 	var dsn string
 	if option.UnixSocket == "" {
 		dsn = fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?tls=%t&readTimeout=60s&writeTimeout=60s", option.User, option.Password, option.Host, option.Port, option.CcnetDbName, option.UseTLS)
@@ -203,6 +209,7 @@ func main() {
 	loadCcnetDB()
 
 	Init()
+	initPush(configDir)
 
 	go handleUser1Signal()
 
@@ -261,6 +268,8 @@ func newHTTPRouter() *mux.Router {
 	r.Handle("/", appHandler(messageCB))
 	r.Handle("/events{slash:\\/?}", appHandler(eventCB))
 	r.Handle("/ping{slash:\\/?}", appHandler(pingCB))
+	r.Handle("/push/register", appHandler(pushRegisterCB))
+	r.Handle("/push/unregister", appHandler(pushUnregisterCB))
 
 	return r
 }
