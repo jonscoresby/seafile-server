@@ -63,6 +63,44 @@ func TestThrottleStateMachine(t *testing.T) {
 	}
 }
 
+// The stage-3 phone test (60 s interval): changes at 09:59:12, 09:59:26,
+// 10:00:14 and 10:01:23 were pushed at 09:59:13, 10:00:13, 10:01:13 and
+// 10:02:13. The last change came 69 s after the one before, yet waited 50 s
+// because each trailing push started a new hold.
+func TestThrottleChangeAfterQuietIntervalIsImmediate(t *testing.T) {
+	interval := time.Minute
+	t0 := time.Date(2026, 10, 17, 9, 59, 12, 0, time.UTC)
+	at := func(s int) time.Time { return t0.Add(time.Duration(s) * time.Second) }
+	var th throttle
+
+	if send, _ := th.event(at(0), interval); !send {
+		t.Fatal("first change: want an immediate push")
+	}
+	if send, wakeAt := th.event(at(14), interval); send || !wakeAt.Equal(at(60)) {
+		t.Fatalf("change 14 s later: send=%v wakeAt=%v, want held until %v", send, wakeAt, at(60))
+	}
+	if !th.wake(at(60), interval) {
+		t.Fatal("want a trailing push")
+	}
+	// 48 s after the previous change: still held, to an interval after the
+	// trailing push.
+	if send, wakeAt := th.event(at(62), interval); send || !wakeAt.Equal(at(120)) {
+		t.Fatalf("change 48 s after the previous one: send=%v wakeAt=%v, want held until %v", send, wakeAt, at(120))
+	}
+	if !th.wake(at(120), interval) {
+		t.Fatal("want a trailing push")
+	}
+	// 69 s after the previous change, 11 s after the trailing push: the
+	// library was quiet for an interval, so it goes out at once.
+	if send, wakeAt := th.event(at(131), interval); !send || !wakeAt.IsZero() {
+		t.Fatalf("change after a quiet interval: send=%v wakeAt=%v, want an immediate push", send, wakeAt)
+	}
+	// And a burst right after it is held for one trailing push.
+	if send, wakeAt := th.event(at(132), interval); send || !wakeAt.Equal(at(191)) {
+		t.Fatalf("change 1 s later: send=%v wakeAt=%v, want held until %v", send, wakeAt, at(191))
+	}
+}
+
 type receiver struct {
 	mu     sync.Mutex
 	bodies []string
@@ -158,6 +196,34 @@ func TestPusherThrottlesDeliveries(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 	if n := rc.count(); n != 3 {
 		t.Fatalf("%d pushes, change of another library pushed", n)
+	}
+}
+
+func TestPusherChangeAfterQuietIntervalIsImmediate(t *testing.T) {
+	p := newTestPusher(t)
+	rc := &receiver{}
+	srv := httptest.NewServer(rc)
+	defer srv.Close()
+
+	interval := time.Second
+	sub := pushSub{Endpoint: srv.URL + "/up", RepoID: testRepo, User: "a@x", Interval: interval, ExpiresAt: time.Now().Add(time.Hour)}
+	if err := p.store.upsert(sub); err != nil {
+		t.Fatal(err)
+	}
+
+	p.notify(testRepo)
+	waitFor(t, "immediate push", func() bool { return rc.count() == 1 }, time.Second)
+	time.Sleep(100 * time.Millisecond)
+	p.notify(testRepo)
+	waitFor(t, "trailing push", func() bool { return rc.count() == 2 }, 2*time.Second)
+	// More than an interval after the last change, but well inside the
+	// interval after the trailing push.
+	time.Sleep(300 * time.Millisecond)
+	changed := time.Now()
+	p.notify(testRepo)
+	waitFor(t, "push of a change after a quiet interval", func() bool { return rc.count() == 3 }, 2*time.Second)
+	if lag := rc.times[2].Sub(changed); lag > 200*time.Millisecond {
+		t.Fatalf("change after a quiet interval pushed %v later, want at once", lag)
 	}
 }
 

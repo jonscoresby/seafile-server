@@ -9,10 +9,12 @@ package main
 // fresh JWT whenever they sync. Subscriptions are kept in a SQLite file.
 //
 // On a repo-update event every unexpired subscription of the library gets a
-// POST of {"repo_id": "..."} (no names), throttled per subscription: the first
-// change is pushed at once, then nothing for the subscription's interval, then
-// one trailing push if anything changed meanwhile. A 404 or 410 from the push
-// server means the endpoint is gone: all its subscriptions are dropped.
+// POST of {"repo_id": "..."} (no names), throttled per subscription: a change
+// is pushed at once if nothing changed for the subscription's interval (or
+// nothing was pushed for that long); otherwise it waits for the end of the
+// interval following the last push, so a burst gives one immediate push and
+// one trailing push per interval. A 404 or 410 from the push server means the
+// endpoint is gone: all its subscriptions are dropped.
 
 import (
 	"bytes"
@@ -168,12 +170,19 @@ func (s *pushStore) purgeExpired(now time.Time) (int64, error) {
 	return res.RowsAffected()
 }
 
-// throttle is the per-subscription state: push the first change at once,
-// then stay quiet for the interval and push once more at its end if anything
-// changed during it. The caller sends when told to and arms a timer calling
-// wake at the returned time.
+// throttle is the per-subscription state. A change is pushed at once if the
+// library was quiet (no change) for the interval, or if the last push is that
+// old. Otherwise it is held: no push before holdUntil (an interval after the
+// last push), then one trailing push for everything held. The caller sends
+// when told to and arms a timer calling wake at the returned time.
+//
+// Quiet is measured from the last change, not the last push: a trailing push
+// must not delay a change that comes after a quiet interval, or changes spaced
+// a bit more than an interval apart would each wait for the next trailing
+// push.
 type throttle struct {
-	quietUntil time.Time
+	holdUntil  time.Time
+	lastChange time.Time
 	pending    bool
 	armed      bool
 }
@@ -181,8 +190,10 @@ type throttle struct {
 // event records a change. sendNow: push it now. wakeAt (if not zero): arm a
 // timer for then.
 func (t *throttle) event(now time.Time, interval time.Duration) (sendNow bool, wakeAt time.Time) {
-	if !t.armed && !now.Before(t.quietUntil) {
-		t.quietUntil = now.Add(interval)
+	quiet := t.lastChange.IsZero() || now.Sub(t.lastChange) >= interval
+	t.lastChange = now
+	if !t.armed && (quiet || !now.Before(t.holdUntil)) {
+		t.holdUntil = now.Add(interval)
 		return true, time.Time{}
 	}
 	t.pending = true
@@ -190,24 +201,24 @@ func (t *throttle) event(now time.Time, interval time.Duration) (sendNow bool, w
 		return false, time.Time{}
 	}
 	t.armed = true
-	return false, t.quietUntil
+	return false, t.holdUntil
 }
 
-// wake is the timer firing at the end of a quiet period. send: push the
-// trailing change, which starts a new quiet period.
+// wake is the timer firing at holdUntil. send: push the held changes, which
+// holds later ones for another interval unless the library goes quiet.
 func (t *throttle) wake(now time.Time, interval time.Duration) (send bool) {
 	t.armed = false
 	if !t.pending {
 		return false
 	}
 	t.pending = false
-	t.quietUntil = now.Add(interval)
+	t.holdUntil = now.Add(interval)
 	return true
 }
 
 // idle: the state holds nothing worth keeping.
 func (t *throttle) idle(now time.Time) bool {
-	return !t.armed && !now.Before(t.quietUntil)
+	return !t.armed && !now.Before(t.holdUntil)
 }
 
 type pusher struct {
@@ -290,7 +301,7 @@ func (p *pusher) notify(repoID string) {
 	}
 }
 
-// wake ends the quiet period of throttle t, unless the subscription was
+// wake ends the hold of throttle t, unless the subscription was
 // forgotten (and maybe re-registered with a fresh state) since t's timer
 // was armed.
 func (p *pusher) wake(key subKey, t *throttle) {
