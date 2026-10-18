@@ -115,6 +115,33 @@ get_basename (const char *path)
     return g_strdup(&path[i+1]);
 }
 
+/* Bytes of the uploaded file's name kept in a temp file name (for
+ * debugging only). The rest of the name is dropped so that the temp file
+ * name stays well under NAME_MAX (255) whatever the length of the uploaded
+ * name, which may itself be up to 255 bytes. */
+#define TEMP_NAME_PREFIX_MAX 32
+
+/* mkstemp template "<dir>/upload-<first bytes of the basename>XXXXXX". The
+ * kept part is cut on a UTF-8 character boundary. */
+static char *
+temp_file_template (const char *dir, const char *file_name)
+{
+    char *base_name = get_basename (file_name);
+    int len = strlen (base_name);
+    char *ret;
+
+    if (len > TEMP_NAME_PREFIX_MAX) {
+        len = TEMP_NAME_PREFIX_MAX;
+        /* Back up over continuation bytes to the start of a character. */
+        while (len > 0 && (((unsigned char)base_name[len]) & 0xC0) == 0x80)
+            --len;
+    }
+
+    ret = g_strdup_printf ("%s/upload-%.*sXXXXXX", dir, len, base_name);
+    g_free (base_name);
+    return ret;
+}
+
 /* It's a bug of libevhtp that it doesn't set Content-Length automatically
  * in response to a multipart request.
  * Just add it in our code.
@@ -1054,9 +1081,10 @@ write_block_data_to_tmp_file (RecvFSM *fsm, const char *parent_dir,
     }
 
     if (!temp_file) {
-        temp_file = g_strdup_printf ("%s/cluster-shared/%sXXXXXX",
-                                     seaf->http_server->http_temp_dir,
-                                     file_name);
+        char *shared_dir = g_build_filename (seaf->http_server->http_temp_dir,
+                                             "cluster-shared", NULL);
+        temp_file = temp_file_template (shared_dir, file_name);
+        g_free (shared_dir);
         tmp_fd = g_mkstemp_full (temp_file, O_RDWR, cluster_shared_temp_file_mode);
         if (tmp_fd < 0) {
             seaf_warning ("Failed to create upload temp file: %s.\n", strerror(errno));
@@ -2060,21 +2088,17 @@ parse_mime_header (evhtp_request_t *req, char *header, RecvFSM *fsm)
 static int
 open_temp_file (RecvFSM *fsm)
 {
-    GString *temp_file = g_string_new (NULL);
-    char *base_name = get_basename(fsm->file_name);
+    char *temp_file = temp_file_template (seaf->http_server->http_temp_dir,
+                                          fsm->file_name);
 
-    g_string_printf (temp_file, "%s/%sXXXXXX",
-                     seaf->http_server->http_temp_dir, base_name);
-    g_free (base_name);
-
-    fsm->fd = g_mkstemp (temp_file->str);
+    fsm->fd = g_mkstemp (temp_file);
     if (fsm->fd < 0) {
         seaf_warning("[upload] Failed to open temp file: %s.\n", strerror(errno));
-        g_string_free (temp_file, TRUE);
+        g_free (temp_file);
         return -1;
     }
 
-    fsm->tmp_file = g_string_free (temp_file, FALSE);
+    fsm->tmp_file = temp_file;
     /* For clean up later. */
     if (fsm->rstart < 0) {
         fsm->files = g_list_prepend (fsm->files, g_strdup(fsm->tmp_file));

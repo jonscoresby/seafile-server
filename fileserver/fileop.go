@@ -1350,6 +1350,23 @@ func doUpload(rsp http.ResponseWriter, r *http.Request, fsm *recvData, isAjax bo
 	return nil
 }
 
+// tempNamePattern is the os.CreateTemp pattern for an upload's temp file:
+// "upload-" and at most the first 32 bytes of the name, cut on a UTF-8
+// boundary, so that the temp file name stays under NAME_MAX (255) whatever
+// the length of the uploaded name.
+func tempNamePattern(filename string) string {
+	const prefixMax = 32
+	name := filepath.Base(filename)
+	if len(name) > prefixMax {
+		n := prefixMax
+		for n > 0 && !utf8.RuneStart(name[n]) {
+			n--
+		}
+		name = name[:n]
+	}
+	return "upload-" + strings.ReplaceAll(name, "*", "")
+}
+
 func writeBlockDataToTmpFile(r *http.Request, fsm *recvData, formFiles map[string][]*multipart.FileHeader,
 	repoID, parentDir string) error {
 	httpTempDir := filepath.Join(absDataDir, "httptemp")
@@ -1378,7 +1395,7 @@ func writeBlockDataToTmpFile(r *http.Request, fsm *recvData, formFiles map[strin
 	tmpFile, err := repomgr.GetUploadTmpFile(repoID, filePath)
 	if err != nil || tmpFile == "" {
 		tmpDir := filepath.Join(httpTempDir, "cluster-shared")
-		f, err = os.CreateTemp(tmpDir, filename)
+		f, err = os.CreateTemp(tmpDir, tempNamePattern(filename))
 		if err != nil {
 			return err
 		}
